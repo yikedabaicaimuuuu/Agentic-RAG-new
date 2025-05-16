@@ -1,0 +1,6 @@
+langchain
+langchain-openai
+langchain-community
+ragas
+dspy-ai
+pandas

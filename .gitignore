@@ -1,0 +1,11 @@
+arag/
+vectorstore/
+vectorstore-hotpot/
+data/
+data-hotpot/
+__pycache__/
+.DS_Store
+*.faiss
+*.dylib
+*.pt
+*.h5
