@@ -24,14 +24,15 @@ The system follows a **multi-agent modular architecture**, with four core agents
 
 ## 📁 Project Structure
 
-├── agents/ # Reasoning, Retrieval, Evaluation, Generation agents, langraph_rag.py
-├── scripts/ # Data preprocessing and vectorstore building
-│ ├── build_hotpot_mini.py
-│ └── build_vectorstore.py
-├── main-hotpot.py # Main execution pipeline
-├── requirements.txt
-├── README.md
-└── assets/ # System diagrams and README images
+- `agents/` — Reasoning, Retrieval, Evaluation, and Generation agent code
+- `scripts/` — Data preprocessing and vectorstore building
+  - `build_hotpot_mini.py` — Build a test subset of HotpotQA
+  - `build_vectorstore.py` — Generate dense vectors and FAISS index
+- `main-hotpot.py` — Main execution pipeline
+- `requirements.txt` — Python dependencies
+- `README.md` — This file
+- `assets/` — System diagrams and figures for the README
+
 
 
 ---
