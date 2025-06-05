@@ -12,7 +12,7 @@ The system follows a **multi-agent modular architecture**, with four core agents
 - **Generation Agent:** Produces final answers via prompt templates, with retry logic based on evaluation metrics.
 - **Router:** Directs the flow of execution based on metric thresholds or fallback strategies (e.g., hybrid rules).
 
-![System Diagram](assets/system_architecture.png) <!-- Replace with your actual diagram if uploaded -->
+![System Diagram](assets/system_architecture.jpg) <!-- Replace with your actual diagram if uploaded -->
 
 ## 🚀 Features
 
@@ -24,29 +24,42 @@ The system follows a **multi-agent modular architecture**, with four core agents
 
 ## 📁 Project Structure
 
-```plaintext
-.
-├── agents/              # Reasoning, Retrieval, Evaluation, Generation agent code
-├── scripts/             # CLI scripts and evaluation utilities
-├── main-hotpot.py       # Main execution script for HotpotQA evaluation
-├── requirements.txt     # Python dependencies
-└── README.md            # This file
+├── agents/ # Reasoning, Retrieval, Evaluation, Generation agents, langraph_rag.py
+├── scripts/ # Data preprocessing and vectorstore building
+│ ├── build_hotpot_mini.py
+│ └── build_vectorstore.py
+├── main-hotpot.py # Main execution pipeline
+├── requirements.txt
+├── README.md
+└── assets/ # System diagrams and README images
+
+
+---
 
 ## 🧪 Running the Pipeline
 
+### Step 1: Install Dependencies
+
 ```bash
 pip install -r requirements.txt
+```
 
-# Step 1: Build the Vectorstore
-# Build a small subset of HotpotQA data (optional for testing)
+### Step 2: Build the Vectorstore
+
+```bash
+# Build a subset of HotpotQA (optional)
 python scripts/build_hotpot_mini.py
 
-# Vectorize the data and build FAISS index
+# Generate vectorstore using FAISS
 python scripts/build_vectorstore.py
+```
 
-# Step 2: Run the pipeline
+### Step 3: Run the Pipeline
+
+```bash
 python main-hotpot.py
 ```
+
 
 ## 📊 Evaluation Metrics
 
@@ -60,7 +73,14 @@ The pipeline includes five key metrics:
 | Semantic F1 Score          | DSPy-based semantic overlap with ground-truth     |
 | Context Precision / Recall | Relevance and completeness of retrieved passages  |
 
-Each test case is labeled as Pass if it satisfies a hybrid rule combining strict grounding and high semantic alignment.
+A test case is marked Pass if it satisfies the hybrid rule:
+
+(Faithfulness ≥ 0.7, Relevancy ≥ 0.7, Noise ≤ 0.4, Semantic F1 ≥ 0.7)
+OR
+
+(Semantic F1 ≥ 0.75 and Context Recall ≥ 0.7)
+
+
 
 ## 📈 Results
 The system achieved:
@@ -72,3 +92,5 @@ Semantic F1 Score: 0.89
 Overall Accuracy: 80% on 10 HotpotQA cases
 
 
+## 📬 Acknowledgments
+This project was developed as part of an Independent Study at UC Santa Cruz. Special thanks to faculty advisors and reviewers for their guidance.
