@@ -3,23 +3,29 @@ import json
 import random
 from langchain_openai import ChatOpenAI
 import httpx
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils import trim_text_to_tokens
+
+
 
 
 def load_dataset(json_path="data-hotpot/hotpot_mini_corpus.json", train_ratio=0.7, val_ratio=0.2):
     """加载 Hotpot mini corpus (json) 并拆分 trainset, valset, testset"""
 
-    # 加载 JSON 文件
+    # Load JSON file
     with open(json_path, 'r') as f:
         corpus = json.load(f)
 
-    # **确保数据足够大**
+    # **Ensure data is large enough**
     if len(corpus) < 10:
-        raise ValueError("⚠️ 数据量太少，无法训练 MIPROv2！请增加数据！")
+        raise ValueError("⚠️ Data is too small, cannot train MIPROv2! Please increase data!")
 
-    # **生成pseudo questions and answers**
+    # **Generate pseudo questions and answers**
     examples = []
     for item in corpus:
-        # 🔥 现在 context 是已经清洗好的长文本
+        # 🔥 Now context is already cleaned long text
         context_text = item['context']
         question = item['question']
         answer = item['answer']
@@ -28,55 +34,55 @@ def load_dataset(json_path="data-hotpot/hotpot_mini_corpus.json", train_ratio=0.
             dspy.Example(context=context_text, question=question, response=answer).with_inputs("context", "question")
         )
 
-    # **随机打乱数据**
+    # **Shuffle data randomly**
     random.shuffle(examples)
 
-    # **计算数据集大小**
+    # **Calculate data set size**
     total_size = len(examples)
     train_size = int(total_size * train_ratio)
     val_size = int(total_size * val_ratio)
     test_size = total_size - train_size - val_size
 
-    # **拆分数据**
+    # **Split data**
     trainset, valset, testset = (
         examples[:train_size],
         examples[train_size:train_size+val_size],
         examples[train_size+val_size:]
     )
 
-    # **确保trainset/valset不为空**
+    # **Ensure trainset/valset is not empty**
     if not trainset or not valset:
-        raise ValueError("⚠️ trainset 或 valset 为空，无法运行 MIPROv2，请检查数据！")
+        raise ValueError("⚠️ trainset or valset is empty, cannot run MIPROv2, please check data!")
 
     return trainset, valset, testset
 
 
 class ReasoningAgent:
     """
-    仅执行 Query/Prompt 优化，不直接评估最终回答质量，也不产出最终回答；
-    而是返回 refined_query，供 RetrievalAgent 或后续环节调用。
+    Only perform Query/Prompt optimization, do not directly evaluate final answer quality, nor produce final answer;
+    but return refined_query, RetrievalAgent can use it.
     """
 
     def __init__(self, model_name="gpt-3.5-turbo", llm=None):
         if llm is not None:
             self.llm = llm
         else:
-            self.llm = ChatOpenAI(model_name=model_name, temperature=0)
+            self.llm = ChatOpenAI(model_name=model_name, temperature=0, max_tokens=1000)
 
-        # ❶ ChainOfThought签名必须是简单格式
+        # ❶ ChainOfThought signature must be a simple format
         self.chain = dspy.ChainOfThought("context, question -> response")
 
-        # ❷ MIPROv2 优化器
+        # ❷ MIPROv2 optimizer
         self.optimizer = dspy.MIPROv2(
-            metric=dspy.evaluate.SemanticF1(),  # 用SemanticF1评估prompt优化效果
+            metric=dspy.evaluate.SemanticF1(),  # Use SemanticF1 to evaluate prompt optimization effect
             auto="medium",
             num_threads=5
         )
 
-        # ❸ 加载数据集
+        # ❸ Load dataset
         self.trainset, self.valset, self.testset = load_dataset(val_ratio=0.1)
 
-         # ❹ 编译 optimized agent (必须在有了 trainset/valset 后)
+         # ❹ Compile optimized agent (must after trainset/valset is loaded)
         self.optimized_agent = self.optimizer.compile(
             self.chain,
             trainset=self.trainset,
@@ -85,14 +91,14 @@ class ReasoningAgent:
         )
 
     def _should_fallback(self, retrieved_context: str) -> bool:
-        """判断retrieved_context是否太差，需要fallback"""
+        """Determine if retrieved_context is too poor, need fallback"""
         if len(retrieved_context.split()) < 50:
             return True
         keywords = ["overview", "history", "general", "unrelated", "background", "miscellaneous"]
         return any(kw.lower() in retrieved_context.lower() for kw in keywords)
 
     def _fewshot_examples(self) -> str:
-        """提供 few-shot 示例"""
+        """Provide few-shot examples"""
         return (
             "Example 1:\n"
             "Question: What are the main types of cloud computing?\n"
@@ -105,7 +111,7 @@ class ReasoningAgent:
         )
 
     def _instruction_prefix(self) -> str:
-        """生成优化 refined_query 时需要的 instruction"""
+        """Generate instruction needed for optimizing refined_query"""
         return (
             "Given the retrieved context and the user question:\n"
             "1. Analyze whether the retrieved context is sufficient, overly broad, noisy, or off-topic.\n"
@@ -115,7 +121,7 @@ class ReasoningAgent:
         )
 
     def plan(self, user_question, retrieved_docs=None):
-        """核心方法：生成 refined_query，同时支持动态fallback和few-shot引导"""
+        """Core method: generate refined_query, support dynamic fallback and few-shot guidance"""
 
         retrieved_context = ""
         fallback = False
@@ -124,20 +130,24 @@ class ReasoningAgent:
             retrieved_context = "\n".join(doc.page_content for doc in retrieved_docs)
 
             if self._should_fallback(retrieved_context):
-                print("⚠️ 检测到retrieved context质量差，直接fallback到 user_question")
+                print("⚠️ Detected retrieved context is poor, fallback directly to user_question")
                 fallback = True
             else:
-                print("✅ Retrieved context质量良好，正常优化 refined_query")
-                # 加 few-shot + 指令引导
+                print("✅ Retrieved context is good, normal optimization of refined_query")
+                # Add few-shot + instruction guidance
                 few_shot_context = self._fewshot_examples()
                 instruction = self._instruction_prefix()
-                retrieved_context = instruction + few_shot_context + "====\n" + retrieved_context
+                full_prompt = instruction + few_shot_context + "====\n" + retrieved_context
+
+                # ✅ Trim the concatenated prompt to prevent exceeding context window
+                trimmed_prompt = trim_text_to_tokens(full_prompt, max_tokens=8000)
+                retrieved_context = trimmed_prompt
         else:
-            print("⚠️ 没有retrieved docs，直接使用 user_question")
+            print("⚠️ No retrieved docs, use user_question directly")
             fallback = True
 
         if fallback:
-            # fallback时只用instruction + user_question
+            # When fallback, only use instruction + user_question
             dspy_response = self.optimized_agent(context=self._instruction_prefix(), question=user_question)
         else:
             dspy_response = self.optimized_agent(context=retrieved_context, question=user_question)

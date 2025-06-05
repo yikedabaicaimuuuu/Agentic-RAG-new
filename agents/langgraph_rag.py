@@ -10,19 +10,20 @@ from agents.retrieval_agent import RetrievalAgent
 from agents.evaluation_agent import EvaluationAgent
 from agents.generation_agent import GenerationAgent
 
-import numpy as np  # 🔧 添加此项用于 extract_scalar
+import numpy as np  # 🔧 add this for extract_scalar
+from decimal import Decimal
 
-# 🔧 用于提取各类结果中的数值（列表/np/float）
+# 🔧 used to extract numbers from various results (list/np/float)
 def extract_scalar(val):
     if isinstance(val, list) and val:
         return float(val[0])
-    elif isinstance(val, (int, float, np.floating, np.generic)):
+    elif isinstance(val, (int, float, np.floating, np.generic, Decimal)):
         return float(val)
     else:
         return float(val) if val is not None else 0.0
 
 
-# 1) State 类型里可以保留或增加更多字段用于多指标
+# 1) State type can keep or add more fields for multiple indicators
 class AgentState(TypedDict):
     question: str
     refined_query: str
@@ -31,6 +32,7 @@ class AgentState(TypedDict):
     faithfulness_score: float
     response_relevancy: float
     noise_sensitivity: float
+    semantic_f1_score: float  # ✅ add this missing field
     context_recall: float
     context_precision: float
     attempts: int
@@ -44,6 +46,7 @@ class AgentState(TypedDict):
     max_attempts: int
     max_regenerates: int
     max_requeries: int
+    reference: Optional[str]  # ✅ add field: for passing Ground Truth
 
 
 def create_rag_graph(
@@ -52,7 +55,7 @@ def create_rag_graph(
     generation_agent: GenerationAgent,
     evaluation_agent: EvaluationAgent
 ):
-    # 修改1: 确保在查询完成后关闭可能打开的文件资源
+    # Modification1: Ensure that the file resource opened after the query is closed
     def cached_retrieve(query: str, reference: str = None):
         try:
             result = retrieval_agent.retrieve(query, reference=reference)
@@ -61,11 +64,11 @@ def create_rag_graph(
             print(f"检索错误: {e}")
             return []
 
-    # 使用有限大小的LRU缓存，防止缓存过大导致资源耗尽
+    # Use a limited-size LRU cache to prevent cache from becoming too large and consuming resources
     retrieve_cache = {}
-    max_cache_size = 20  # 减小缓存大小，降低内存占用
+    max_cache_size = 20  # Reduce cache size, reduce memory usage
 
-    # 修改2: 实现自定义缓存，确保资源管理
+    # Modification2: Implement custom cache to ensure resource management
     def cached_retrieve_with_resource_mgmt(query: str, reference: str = None):
         cache_key = (query, reference)
 
@@ -74,9 +77,9 @@ def create_rag_graph(
 
         result = cached_retrieve(query, reference=reference)
 
-        # 如果缓存已满，移除最早的条目
+        # If the cache is full, remove the oldest item
         if len(retrieve_cache) >= max_cache_size:
-            # 移除第一个键
+            # Remove the first key
             oldest_key = next(iter(retrieve_cache))
             del retrieve_cache[oldest_key]
 
@@ -84,19 +87,19 @@ def create_rag_graph(
         return result
 
     # -----------------------------
-    # (1) 查询优化节点
+    # (1) Query optimization node
     # -----------------------------
     def query_optimizer(state: AgentState) -> AgentState:
-        """利用 ReasoningAgent 优化用户查询 (仅返回 refined_query)"""
+        """Use ReasoningAgent to optimize user queries (only return refined_query)"""
         try:
             print(f"\n🧠 优化查询: {state['question']}")
             start = time.time()
 
             reasoning_result = reasoning_agent.plan(
                 user_question=state["question"],
-                retrieved_docs=[] # 这里空; 如果需要传 docs 也可
+                retrieved_docs=[] # Here empty; if you need to pass docs, you can also do so
             )
-            # 原先是 reasoning_result["response"], 现改为 reasoning_result["refined_query"]
+            # The original was reasoning_result["response"], now changed to reasoning_result["refined_query"]
             refined_query = reasoning_result["refined_query"]
 
             duration = time.time() - start
@@ -106,42 +109,45 @@ def create_rag_graph(
                 "metrics": {**state["metrics"], "query_optimization_time": duration},
                 "messages": state["messages"] + [{
                     "role": "system",
-                    "content": f"优化后的查询: {refined_query}"
+                    "content": f"Optimized query: {refined_query}"
                 }]
             }
         except Exception as e:
-            print(f"⚠️ 查询优化出错: {e}")
+            print(f"⚠️ Query optimization error: {e}")
             return {
                 **state,
                 "refined_query": state["question"],
-                "error": f"查询优化失败: {str(e)}",
+                "error": f"Query optimization failed: {str(e)}",
                 "messages": state["messages"] + [{
                     "role": "system",
-                    "content": f"查询优化失败: {str(e)}"
+                    "content": f"Query optimization failed: {str(e)}"
                 }]
             }
 
     # -----------------------------
-    # (2) 检索节点
+    # (2) Retrieval node
     # -----------------------------
     def retriever(state: AgentState) -> AgentState:
-        """基于 refined_query 进行检索，可选做 evaluate_retrieval"""
+        """Retrieve based on refined_query, optionally perform evaluate_retrieval"""
         try:
             query = state["refined_query"]
             reference = state.get("reference", None)  # ✅ 新增
-            print(f"\n📚 基于优化后的查询进行检索: {query}")
+            print(f"\n📚 Retrieving based on optimized query: {query}")
 
             start = time.time()
-            # 修改3: 使用资源安全的缓存检索函数
-            docs = cached_retrieve_with_resource_mgmt(query, reference=reference)
+            # Modification3: Use resource-safe caching retrieval function
+            ret_result = cached_retrieve_with_resource_mgmt(query, reference=reference)
+            docs = ret_result["docs"]
+            context_precision = extract_scalar(ret_result.get("context_precision"))
+            context_recall = extract_scalar(ret_result.get("context_recall"))
             duration = time.time() - start
 
             if not docs:
-                print("⚠️ 未检索到相关文档")
+                print("⚠️ No relevant documents found")
                 return {
                     **state,
                     "docs": [],
-                    "answer": "抱歉，我无法找到与您问题相关的信息。",
+                    "answer": "Sorry, I couldn't find any information related to your question.",
                     "faithfulness_score": 0.0,
                     "next_step": "end",
                     "metrics": {
@@ -151,10 +157,10 @@ def create_rag_graph(
                     },
                     "messages": state["messages"] + [{
                         "role": "system",
-                        "content": "未检索到相关文档"
+                        "content": "No relevant documents found"
                     }]
                 }
-            # ✅ 限制 context 长度（防止 downstream 爆 token）
+            # ✅ Limit context length (to prevent downstream token explosion)
             def trim_doc_text(doc):
                 return doc.page_content[:3000] if len(doc.page_content) > 3000 else doc.page_content
 
@@ -164,10 +170,10 @@ def create_rag_graph(
             ]
 
 
-            # 如果想记录检索质量(Recall/Precision)，可调用:
+            # If you want to record retrieval quality (Recall/Precision), you can call:
             ret_eval = evaluation_agent.evaluate_retrieval(query, docs, reference=reference)
-            context_precision = ret_eval.get("context_precision", 0.0)
-            context_recall = ret_eval.get("context_recall", 0.0)
+            context_precision = extract_scalar(ret_eval.get("context_precision", 0.0))
+            context_recall = extract_scalar(ret_eval.get("context_recall", 0.0))
 
             print(f"🎯 Retrieval Metrics: Precision={context_precision:.2f}, Recall={context_recall:.2f}")
 
@@ -186,47 +192,72 @@ def create_rag_graph(
                 },
                 "messages": state["messages"] + [{
                     "role": "system",
-                    "content": f"检索到 {len(docs)} 个文档"
+                    "content": f"Retrieved {len(docs)} documents"
                 }]
             }
         except Exception as e:
-            print(f"⚠️ 检索出错: {e}")
+            print(f"⚠️ Retrieval error: {e}")
             return {
                 **state,
                 "docs": [],
-                "error": f"检索失败: {str(e)}",
+                "error": f"Retrieval failed: {str(e)}",
                 "next_step": "end",
                 "messages": state["messages"] + [{
                     "role": "system",
-                    "content": f"检索失败: {str(e)}"
+                    "content": f"Retrieval failed: {str(e)}"
                 }]
             }
 
     # -----------------------------
-    # (3) 生成答案节点
+    # (3) Generate answer node
     # -----------------------------
     def generator(state: AgentState) -> AgentState:
-        """调用 GenerationAgent 生成回答，不在此做评估，交给 evaluator 节点做"""
+        """Call GenerationAgent to generate an answer, do not evaluate here, let the evaluator node do it"""
         try:
             query = state["refined_query"]
             docs = state["docs"]
-            print(f"\n✍️ 生成答案...")
+            reference = state.get("reference", None)  # ✅ ground truth
+            print(f"\n✍️ Generate answer...")
+            print(f"🧪 Reference in generator: {reference}")  # ✅ Debug information
 
             start = time.time()
-            # 生成回答 (内部会做多次重试/Prompt优化)
-            answer_result = generation_agent.answer(query, docs, evaluation_agent)
+            # Generate answer (internal will do multiple retries/Prompt optimization)
+            answer_result = generation_agent.answer(
+                question=query,
+                docs=docs,
+                evaluation_agent=evaluation_agent,
+                ground_truth=reference  # ✅ Key addition
+            )
             duration = time.time() - start
+
+            relevancy = (
+                answer_result.get("response_relevancy") or
+                answer_result.get("answer_relevancy") or
+                0.0
+            )
+            # ✅✅✅ Insert debug output: check if semantic_f1 exists & passed correctly
+            print("🧪 Final answer_result:", answer_result)
+            print("🧪 semantic_f1_score in answer_result:", answer_result.get("semantic_f1_score"))
+            print("🧪 semantic_f1 (alt key):", answer_result.get("semantic_f1"))
 
             return {
                 **state,
                 "answer": answer_result["answer"],
                 "faithfulness_score": answer_result.get("faithfulness_score", 0.0),
-                "response_relevancy": answer_result.get("response_relevancy", 0.0),
+                "response_relevancy": extract_scalar(relevancy),
                 "noise_sensitivity": answer_result.get("noise_sensitivity", 1.0),
+                # ✅ If there are two possible keys, make a compatible处理：
+                "semantic_f1_score": (
+                answer_result.get("semantic_f1_score", 0.0)
+                if answer_result.get("semantic_f1_score") is not None
+                else answer_result.get("semantic_f1", 0.0)
+            ),
+                "eval_result": answer_result.get("cached_eval_result", None),  # ✅ Pass evaluation details
                 "metrics": {
                     **state["metrics"],
                     "generation_time": duration,
-                    "cached_eval_result": answer_result.get("eval_result", None)  # ✅ 添加缓存评估结果
+                    "cached_eval_result": answer_result.get("cached_eval_result", None)  # ✅ Add cached evaluation result
+
                 },
                 "messages": state["messages"] + [{
                     "role": "assistant",
@@ -235,34 +266,34 @@ def create_rag_graph(
 
             }
         except Exception as e:
-            print(f"⚠️ 生成答案出错: {e}")
+            print(f"⚠️ Generating answers incorrectly: {e}")
             return {
                 **state,
-                "answer": "抱歉，在生成答案时遇到了问题。",
-                "error": f"生成答案失败: {str(e)}",
+                "answer": "Sorry, I encountered an issue while generating an answer.",
+                "error": f"Failed to generate an answer: {str(e)}",
                 "next_step": "end",
                 "messages": state["messages"] + [{
                     "role": "system",
-                    "content": f"生成答案失败: {str(e)}"
+                    "content": f"Failed to generate an answer: {str(e)}"
                 }]
             }
 
     # -----------------------------
-    # (4) 评估节点
+    # (4) Evaluator node
     # -----------------------------
     def evaluator(state: AgentState) -> AgentState:
         print(f"⚡ Evaluator skipped (由 Generator 已评估)")
         return state
 
     # -----------------------------
-    # (5) 路由器节点
+    # (5) Router node
     # -----------------------------
     def router(state: AgentState) -> AgentState:
         """
-        根据多个指标综合判断下一步:
-        1) 如果检索指标低, 优先 re-query
-        2) 若检索合格但回答质量不够, re-generate
-        3) 若回答质量好或尝试次数达上限, end
+        Based on multiple indicators, determine the next step:
+        1) If retrieval metrics are low, prioritize re-query
+        2) If retrieval is acceptable but answer quality is insufficient, re-generate
+        3) If answer quality is good or attempts limit reached, end
         """
 
         attempts = state["attempts"]
@@ -274,36 +305,36 @@ def create_rag_graph(
 
 
 
-        # ---- 解包各指标 ----
+        # ---- Unpack各指标 ----
         # Retrieval metrics
-        context_recall = state["context_recall"]    # e.g. 0.0 ~ 1.0
-        context_precision = state["context_precision"]
+        context_recall = extract_scalar(state.get("context_recall", 0.0))
+        context_precision = extract_scalar(state.get("context_precision", 0.0))
         # Generation metrics
-        faithfulness = state["faithfulness_score"]
-        relevancy = state.get("response_relevancy", 0.0)
-        noise = state.get("noise_sensitivity", 1.0)
-        # 其他状态
+        faithfulness = extract_scalar(state.get("faithfulness_score", 0.0))
+        relevancy = extract_scalar(state.get("response_relevancy", 0.0))
+        noise = extract_scalar(state.get("noise_sensitivity", 1.0))
+        semantic_f1_score = extract_scalar(state.get("semantic_f1_score", 0.0))
+        # Other states
 
         error = state.get("error", None)
 
 
         print(f"\n🔄 路由决策: attempts={attempts}, requery={requery_count}, regenerate={regenerate_count}")
         print(f"    → recall={context_recall:.2f}, precision={context_precision:.2f}")
-        print(f"    → faith={faithfulness:.2f}, relevancy={relevancy:.2f}, noise={noise:.2f}")
+        print(f"    → faith={faithfulness:.2f}, relevancy={relevancy:.2f}, noise={noise:.2f}, semantic_f1_score={semantic_f1_score:.2f}")
 
 
-        # 若已出错, 直接结束
+        # If an error occurs, end directly
         if error:
             return {**state, "next_step": "end", "attempts": attempts + 1}
 
-        # --- Step 0: Generation 优先 override ---
-        if faithfulness >= 0.7 and relevancy >= 0.7 and noise <= 0.4:
+        # --- Step 0: Generation priority override ---
+        if faithfulness >= 0.7 and relevancy >= 0.7 and noise <= 0.4 and semantic_f1_score >= 0.7:
             print("✅ Generation quality is high, skipping retrieval quality check. Proceed to end.")
             return {**state, "next_step": "end", "attempts": attempts + 1}
 
-        # --- Step 1: 检索质量是否明显不足(Recall/Precision过低) ---
-        #    如果确实检索不理想, 更可能需要 re-query
-            # --- 检索不足 ---
+        # --- Step 1: Check if retrieval quality is significantly insufficient (Recall/Precision too low)
+        #     If retrieval is significantly insufficient, it is more likely to need re-query
         if context_recall < 0.5 or context_precision < 0.3:
             if requery_count < max_requeries:
                 return {
@@ -313,12 +344,17 @@ def create_rag_graph(
                     "attempts": attempts + 1
                 }
             else:
-                # 达到 requery 上限时不强制 regenerate，直接 end
+                # When the requery limit is reached, do not force regenerate, end directly
                 print("⚠️ Retrieval attempts exhausted. Ending.")
                 return {**state, "next_step": "end", "attempts": attempts + 1}
 
-        # --- 回答质量差 ---
-        if faithfulness < 0.6 or relevancy < 0.5 or noise > 0.4:
+        # --- Step 2: If semantic correctness is high and retrieval is good, even if faithfulness is low, allow early termination
+        if semantic_f1_score >= 0.8 and context_recall >= 0.7:
+            print("🎯 High semanticF1 and good retrieval, accept the answer.")
+            return {**state, "next_step": "end", "attempts": attempts + 1}
+
+        # --- Answer quality is poor ---
+        if faithfulness < 0.6 or relevancy < 0.5 or noise > 0.4 or semantic_f1_score < 0.7:
             if regenerate_count < max_regenerates:
                 return {
                     **state,
@@ -330,7 +366,7 @@ def create_rag_graph(
                 print("⚠️ Generation attempts exhausted. Ending.")
                 return {**state, "next_step": "end", "attempts": attempts + 1}
 
-        # --- 回答已足够 ---
+        # --- Answer is sufficient ---
         return {**state, "next_step": "end", "attempts": attempts + 1}
 
 
@@ -338,12 +374,12 @@ def create_rag_graph(
     # (6) requery_optimizer
     # -----------------------------
     def requery_optimizer(state: AgentState) -> AgentState:
-        """基于已检索文档再次调用 ReasoningAgent.plan"""
+        """Call ReasoningAgent.plan again based on retrieved documents"""
         try:
-            print(f"\n🔄 重新优化查询...")
+            print(f"\n🔄 Re-optimizing query...")
             start = time.time()
 
-            # 这次给 plan() 传入 docs，以便 Agent 优化 query
+            # This time pass docs to plan() so the Agent can optimize the query
             reasoning_result = reasoning_agent.plan(
                 user_question=state["question"],
                 retrieved_docs=state["docs"]
@@ -360,18 +396,18 @@ def create_rag_graph(
                 },
                 "messages": state["messages"] + [{
                     "role": "system",
-                    "content": f"重新优化的查询: {refined_query}"
+                    "content": f"Re-optimized query: {refined_query}"
                 }]
             }
         except Exception as e:
-            print(f"⚠️ 重新优化查询出错: {e}")
+            print(f"⚠️ Re-optimizing query error: {e}")
             return {
                 **state,
-                "error": f"重新优化查询失败: {str(e)}",
+                "error": f"Re-optimizing query failed: {str(e)}",
                 "next_step": "end",
                 "messages": state["messages"] + [{
                     "role": "system",
-                    "content": f"重新优化查询失败: {str(e)}"
+                    "content": f"Re-optimizing query failed: {str(e)}"
                 }]
             }
 
@@ -379,11 +415,11 @@ def create_rag_graph(
     # (7) finalizer
     # -----------------------------
     def finalizer(state: AgentState) -> AgentState:
-        """完成流程, 统计总时间"""
+        """Complete the process and calculate the total time."""
         total_time = time.time() - state["start_time"]
-        print(f"\n⏱️ 总处理时间: {total_time:.2f}秒")
+        print(f"\n⏱️ Total processing time: {total_time:.2f} seconds")
 
-        # 修改4: 清空缓存，释放资源
+        # Modification4: Clear cache, release resources
         retrieve_cache.clear()
 
         return {
@@ -391,10 +427,10 @@ def create_rag_graph(
             "metrics": {**state["metrics"], "total_time": total_time}
         }
 
-    # 建立 StateGraph
+    # Create StateGraph
     workflow = StateGraph(AgentState)
 
-    # 注册节点
+    # Register nodes
     workflow.add_node("query_optimizer", query_optimizer)
     workflow.add_node("retriever", retriever)
     workflow.add_node("generator", generator)
@@ -403,7 +439,7 @@ def create_rag_graph(
     workflow.add_node("requery_optimizer", requery_optimizer)
     workflow.add_node("finalizer", finalizer)
 
-    # 设置节点顺序
+    # Set node order
     workflow.add_edge("query_optimizer", "retriever")
     workflow.add_edge("retriever", "generator")
     workflow.add_edge("generator", "router")
@@ -419,15 +455,15 @@ def create_rag_graph(
     workflow.add_edge("requery_optimizer", "retriever")
     workflow.add_edge("finalizer", END)
 
-    # 设置入口
+    # Set entry point
     workflow.set_entry_point("query_optimizer")
     return workflow.compile()
 
 # -----------------------------
-# 运行 RAG 流程
+# Run RAG process
 # -----------------------------
 
-# ✅ 在 run_rag_pipeline 开头初始化
+# ✅ Initialize at the beginning of run_rag_pipeline
 #evaluation_agent = EvaluationAgent(debug_mode=False)  #  debug mode
 
 def run_rag_pipeline(
@@ -437,10 +473,11 @@ def run_rag_pipeline(
     generation_agent: GenerationAgent,
     evaluation_agent: EvaluationAgent,
 
+
     **kwargs
 ) -> Dict[str, Any]:
 
-    # 可选参数：reference 作为 ground truth，方便评估阶段使用
+    # Optional parameter: reference as ground truth, for evaluation phase
     reference = kwargs.get("reference", None)
 
     graph = create_rag_graph(
@@ -465,6 +502,7 @@ def run_rag_pipeline(
         "faithfulness_score": 0.0,
         "response_relevancy": 0.0,
         "noise_sensitivity": 0.0,
+        "semantic_f1_score": 0.0,
         "context_recall": 0.0,
         "context_precision": 0.0,
         "attempts": 0,
@@ -474,13 +512,13 @@ def run_rag_pipeline(
         "max_regenerates": 2,
         "max_requeries": 2,
         "next_step": "",
-        "next_step": "",
         "error": None,
         "start_time": time.time(),
         "metrics": {},
         "messages": [{"role": "user", "content": question}],
-        "reference": reference  # 新增：支持 reference 评估
+        "reference": reference
     }
+    print("📎 Ground Truth in initial_state:", initial_state["reference"])
 
     result = graph.invoke(initial_state)
 
@@ -489,8 +527,12 @@ def run_rag_pipeline(
           f"Relevancy: {result['response_relevancy']:.2f}, "
           f"Noise: {result['noise_sensitivity']:.2f}")
 
-    # 输出性能指标
-    print("\n📈 性能指标:")
+    # ✅ If generation stage produces semantic_f1, print it
+    if "semantic_f1_score" in result:
+        print(f"🎯 Semantic F1: {result['semantic_f1_score']:.2f}")
+
+    # Output performance metrics
+    print("\n📈 Performance metrics:")
     for metric, value in result["metrics"].items():
         if isinstance(value, float):
             print(f"  - {metric}: {value:.2f}")

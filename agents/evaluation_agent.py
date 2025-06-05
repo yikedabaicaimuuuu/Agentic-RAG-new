@@ -18,19 +18,18 @@ import numpy as np
 
 class EvaluationAgent:
     """
-    多功能评估Agent:
-      1) quick_evaluate(...) 仅用LLM简单判断检索是否足以回答问题
-      2) evaluate_retrieval(...) 专门计算检索Precision/Recall
-      3) evaluate_generation(...) 专门计算回答质量(Faithfulness等)
-      4) full_evaluate(...) 兼容以前的综合评估逻辑(同时算 context_precision, context_recall, faithfulness)
+    Multi-functional evaluation Agent:
+      1) quick_evaluate(...) Only use LLM to simply determine if retrieval is sufficient to answer the question
+      2) evaluate_retrieval(...) Calculate retrieval Precision/Recall
+      3) evaluate_generation(...) Calculate response quality (Faithfulness, etc.)
+      4) full_evaluate(...) Compatible with previous comprehensive evaluation logic (calculate context_precision, context_recall, faithfulness)
     """
 
     def __init__(self, model_name="gpt-3.5-turbo", embeddings=None, llm=None):
-        #self.debug_mode = debug_mode 如果未来需要使用，需要添加这个参数
         if llm is not None:
             self.llm = llm
         else:
-            self.llm = ChatOpenAI(model_name=model_name, temperature=0)
+            self.llm = ChatOpenAI(model_name=model_name, temperature=0, max_tokens=1000)
 
         if embeddings is None:
             try:
@@ -44,7 +43,7 @@ class EvaluationAgent:
         else:
             self.embeddings = embeddings  # Use provided embeddings
 
-        # 原先 full_evaluate 使用的通用 metrics
+        # The general metrics used in full_evaluate
         # (ContextPrecision, LLMContextRecall, Faithfulness)
         self.metrics = [
             ContextPrecision(),
@@ -52,16 +51,16 @@ class EvaluationAgent:
             Faithfulness()
         ]
 
-        # 可选: 如果想专门区分retrieval vs generation，用不同列表:
+        # Optional: If you want to specifically distinguish retrieval vs generation, use different lists:
         # self.retrieval_metrics = [...]
         # self.generation_metrics = [...]
 
     # ----------------------------------------------------------------------
-    # 1) quick_evaluate(...) - 保留原逻辑
+    # 1) quick_evaluate(...) - Keep original logic
     # ----------------------------------------------------------------------
     def quick_evaluate(self, question, docs):
         """
-        仅使用 LLM 评估：判断检索是否足够回答问题，并提供关键词建议。
+        Only use LLM to evaluate: Determine if retrieval is sufficient to answer the question, and provide keyword suggestions.
         """
         if not docs:
             return {"sufficient": False, "suggested_keywords": "expand keywords"}
@@ -81,7 +80,7 @@ class EvaluationAgent:
         return {"sufficient": sufficient, "suggested_keywords": suggested_keywords}
 
     # ----------------------------------------------------------------------
-    # 2) 提取数字的工具函数 - 保留原逻辑
+    # 2) Extract numeric value tool function - Keep original logic
     # ----------------------------------------------------------------------
     def _get_numeric_value(self, value):
         """
@@ -125,35 +124,35 @@ class EvaluationAgent:
         Extract score from RAGAS result structure, handling different formats.
         """
 
-        # 1. result 是 dict 且包含 metric_name
+        # 1. result is a dict and contains metric_name
         if isinstance(result, dict) and metric_name in result:
             return self._get_numeric_value(result[metric_name])
 
-        # 2. result 有 __getitem__ 方法（模拟 dict）且不是字符串
+        # 2. result has __getitem__ method (simulates dict) and is not a string
         if hasattr(result, "__getitem__") and not isinstance(result, str):
             try:
                 return self._get_numeric_value(result[metric_name])
             except (KeyError, TypeError):
                 pass
 
-        # 3. result 有 .scores 属性（部分 ragas 版本结构）
+        # 3. result has .scores property (part of ragas version structure)
         if hasattr(result, "scores"):
             scores = result.scores
             if isinstance(scores, dict) and metric_name in scores:
                 return self._get_numeric_value(scores[metric_name])
 
-        # 4. result 有 .data 属性（ragas 1.x 中的 EvaluationResult.data）
+        # 4. result has .data property (EvaluationResult.data in ragas 1.x)
         if hasattr(result, "data") and isinstance(result.data, dict):
             if metric_name in result.data:
                 return self._get_numeric_value(result.data[metric_name])
 
-        # 5. result 是一个包含 .name 属性的 list-like 结构
+        # 5. result is a list-like structure containing .name property
         if hasattr(result, "__iter__") and not isinstance(result, (str, dict)):
             for item in result:
                 if hasattr(item, "name") and item.name == metric_name:
                     return self._get_numeric_value(getattr(item, "score", 0))
 
-        # ❌ 最后兜底: 打印调试信息
+        # ❌ Fallback: Print debugging information
         result_type = type(result).__name__
         available_attrs = []
 
@@ -171,7 +170,7 @@ class EvaluationAgent:
 
 
     # ----------------------------------------------------------------------
-    # 3) evaluate_retrieval(...) - 新增: 只评估检索质量(Precision/Recall)
+    # 3) evaluate_retrieval(...) - Add: Only evaluate retrieval quality (Precision/Recall)
     # ----------------------------------------------------------------------
     def evaluate_retrieval(self, user_query, retrieved_docs, reference=None):
         """
@@ -231,7 +230,7 @@ class EvaluationAgent:
             "context_recall": context_recall
         }
     # ----------------------------------------------------------------------
-    # 4) evaluate_generation(...) - 新增: 只评估回答质量(Faithfulness等)
+    # 4) evaluate_generation(...) - Add: Only evaluate response quality (Faithfulness, etc.)
     # ----------------------------------------------------------------------
     def evaluate_generation(self, user_query, retrieved_docs, response, reference=None):
         """
@@ -246,7 +245,7 @@ class EvaluationAgent:
             print("⚠️ Warning: No retrieved texts to evaluate in generation!")
             retrieved_texts = ["N/A"]
 
-          # 🔧 自动裁剪 response 防止评估时超长
+        # 🔧 Automatically trim response to prevent evaluation from being too long
         if len(response) > 3000:
             print(f"⚠️ Response too long ({len(response)} chars), trimming to 3000 chars")
             response = response[:3000]
@@ -328,8 +327,7 @@ class EvaluationAgent:
                 if "noise_sensitivity" in k:
                     noise_sensitivity = self._get_numeric_value(result_dict[k])
                     print(f"🔧 Parsed Noise Sensitivity: {noise_sensitivity:.4f} from key: {k}")
-
-                break
+                    break
 
             print(f"📊 Faithfulness: {faithfulness:.4f}")
             print(f"🎯 Response Relevancy: {relevancy:.4f}")
@@ -349,62 +347,24 @@ class EvaluationAgent:
             "noise_sensitivity": noise_sensitivity
         }
 
-    # def _debug_evaluate_retrieval(self, user_query, retrieved_docs, reference=None):
-    #     """
-    #     Enhanced retrieval evaluation with claims + entailment debug (for recall drift diagnosis)
-    #     """
-    #     from ragas import evaluate as ragas_evaluate
-    #     from ragas.metrics import context_precision, context_recall
 
-    #     retrieved_texts = [doc.page_content for doc in retrieved_docs if doc.page_content.strip()]
-    #     if not retrieved_texts:
-    #         print("⚠️ No retrieved texts to evaluate in debug mode!")
-    #         retrieved_texts = ["N/A"]
-
-    #     testset = Testset.from_dict({
-    #         "question": [user_query],
-    #         "contexts": [retrieved_texts],
-    #         "ground_truth": [reference or ""]
-    #     })
-
-    #     result = ragas_evaluate(
-    #         testset,
-    #         metrics=[context_precision, context_recall]
-    #     )
-
-    #     precision = float(result["context_precision"][0])
-    #     recall = float(result["context_recall"][0])
-
-    #     # Debug claims and entailment
-    #     if hasattr(result, 'claims') and hasattr(result, 'entailment'):
-    #         claims_list = result.claims[0]
-    #         entailment_scores = result.entailment[0]
-    #         print(f"📝 Claims extracted: {claims_list}")
-    #         print(f"✅ Entailment scores: {entailment_scores}")
-    #         for claim, score in zip(claims_list, entailment_scores):
-    #             print(f"→ Claim: {claim}\n   Entailment Score: {score:.2f}\n")
-
-    #     return {
-    #         "context_precision": precision,
-    #         "context_recall": recall
-    #     }
 
 
     # ----------------------------------------------------------------------
-    # 5) full_evaluate(...) - 保留兼容旧逻辑
+    # 5) full_evaluate(...) - Keep compatible with old logic
     # ----------------------------------------------------------------------
     def full_evaluate(self, query, retrieved_docs, response=None, reference=None):
         """
-        使用 RAGAS 进行完整评估：
-        - 检索质量（context precision, recall）
-        - 生成质量（faithfulness）
+        Use RAGAS for complete evaluation:
+        - Retrieval quality (context precision, recall)
+        - Response quality (faithfulness)
         """
         retrieved_texts = [doc.page_content for doc in retrieved_docs if doc.page_content.strip()]
         if not retrieved_texts:
             print("⚠️ Warning: No retrieved texts to evaluate!")
             retrieved_texts = ["N/A"]
 
-        # 提取 ground truth reference
+        # Extract ground truth reference
 
         data = {
             "user_input": query,
@@ -428,7 +388,7 @@ class EvaluationAgent:
 
             print("\n🔎 Debugging: Raw Evaluation Result ➝", result)
 
-            # 兼容不同返回结构：ragas 1.x 使用 result.scores，否则直接用 result 本身
+            # Compatible with different return structures: use result.scores for ragas 1.x, otherwise use result directly
             scores = getattr(result, "scores", result)
 
             if not scores:

@@ -9,3 +9,7 @@ __pycache__/
 *.dylib
 *.pt
 *.h5
+# 临时或中间文件
+*.log
+*.tmp
+*.bak
